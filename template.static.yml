@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+# Template Information
+
+Description: "Nuxt Storyblok Static"
+
+# Template Parameters
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: "The domain name of website"
+  AcmCertificateArn:
+    Type: String
+    Description: "The certificate arn for the domain name provided"
+  IndexDocument:
+    Type: String
+    Description: "The index document"
+    Default: "index.html"
+  ErrorDocument:
+    Type: String
+    Description: "The error document"
+    Default: "404.html"
+  CloudFrontPriceClass:
+    Type: String
+    Description: "The price class for CloudFront distribution"
+    Default: "PriceClass_100"
+    AllowedValues:
+      - PriceClass_100
+      - PriceClass_200
+      - PriceClass_All
+
+# Template Resources
+
+Resources:
+  
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref DomainName
+      AccessControl: "PublicRead"
+      WebsiteConfiguration:
+        IndexDocument: !Ref IndexDocument
+        ErrorDocument: !Ref ErrorDocument
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: 
+        Ref: "Bucket"
+      PolicyDocument: 
+        Statement: 
+          - Action: 
+              - "s3:GetObject"
+            Effect: "Allow"
+            Resource: 
+              !Sub "arn:aws:s3:::${Bucket}/*"
+            Principal: "*"
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+        - DomainName: !Sub "${Bucket}.s3-website.${AWS::Region}.amazonaws.com"
+          Id: websiteOrigin
+          CustomOriginConfig: 
+            OriginProtocolPolicy: "http-only"
+        Enabled: 'true'
+        Comment: !Ref AWS::StackName
+        DefaultRootObject: !Ref IndexDocument
+        DefaultCacheBehavior:
+          Compress: 'true'
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          TargetOriginId: websiteOrigin
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: !Ref CloudFrontPriceClass
+        Aliases:
+          - !Ref DomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+
+# Template Outputs
+
+Outputs:
+  S3Bucket:
+    Description: "The S3 bucket where HTML files need to be uploaded"
+    Value: !Sub "s3://${Bucket}/"
+  CloudFrontDistribution:
+    Description: "The CloudFront distribution in front of the S3 bucket"
+    Value: !Ref Distribution
+  WebsiteUrl:
+    Description: "The website URL"
+    Value: !Sub "https://${DomainName}/"
+
+

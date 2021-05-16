@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+# Template Information
+
+Description: "Github Storyblok Webhook"
+
+# Template Parameters
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: "The name of github repository"
+  GitHubUsername:
+    Type: String
+    Description: "The name of github username"
+  GitHubApiToken:
+    Type: String
+    Description: "The name of github api token"
+  PathToken:
+    Type: String
+    Description: "The token to include in path"
+
+# Global function defaults
+
+Globals:
+  Function:
+    Runtime: nodejs12.x
+    Timeout: 3
+    CodeUri: webhook/
+
+# Template Resources
+
+Resources:
+
+  RestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Ref AWS::StackName
+      StageName: storyblok
+
+  GitHubWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-github"
+      Handler: github.handler
+      Environment:
+        Variables:
+          GITHUB_REPO: !Ref GitHubRepo
+          GITHUB_USERNAME: !Ref GitHubUsername
+          GITHUB_API_TOKEN: !Ref GitHubApiToken
+          PATH_TOKEN: !Ref PathToken
+      Events:
+        ReceiveRequest:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: RestApi
+            Method: POST
+            Path: /github/{token}
+
+# Template Outputs
+
+Outputs:
+  GitHubWebhookEndpoint:
+    Description: "The webhook to trigger GitHub workflow to set in Storyblok webhook"
+    Value: !Sub "https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/storyblok/github/${PathToken}"

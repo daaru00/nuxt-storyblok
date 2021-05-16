@@ -1,0 +1,58 @@
+name: staging
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+
+      - name: Setup node env
+        uses: actions/setup-node@v2.1.2
+        with:
+          node-version: 14
+          check-latest: true
+
+      - name: Cache node_modules
+        uses: actions/cache@v2
+        with:
+          path: ~/.npm
+          key: node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            node-
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate
+        run: npm run generate
+        env:
+          STORYBLOK_FRONTEND_FETCH_ENABLED: 'yes'
+          STORYBLOK_API_TOKEN: ${{ secrets.STORYBLOK_API_TOKEN }}
+          STORYBLOK_BRIDGE_ENABLED: 'yes'
+          STORYBLOK_VERSION: 'draft'
+      
+      - name: Upload to bucket
+        uses: docker://amazon/aws-cli:2.0.7
+        with:
+          args: s3 sync --delete --no-progress --cache-control max-age='31536000' ./dist s3://${{ secrets.AWS_S3_BUCKET_STAGE }}/
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'eu-west-1'
+
+      - name: Invalidate CDN
+        uses: docker://amazon/aws-cli:2.0.7
+        with:
+          args: cloudfront create-invalidation --distribution-id ${{ secrets.AWS_CLOUDFRONT_STAGE }} --paths "/*"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
