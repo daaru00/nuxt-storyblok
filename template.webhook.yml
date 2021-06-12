@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+# Template Information
+
+Description: "CodePipeline Storyblok Webhook"
+
+# Template Parameters
+
+Parameters:
+  CodePipelineName:
+    Type: String
+    Description: "The name of CodePipeline project to trigger"
+  PathToken:
+    Type: String
+    Description: "The token to include in path"
+
+# Global function defaults
+
+Globals:
+  Function:
+    Runtime: nodejs14.x
+    Timeout: 3
+    CodeUri: webhook/
+
+# Template Resources
+
+Resources:
+
+  RestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Ref AWS::StackName
+      StageName: storyblok
+
+  CodePipelineWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-codepipeline"
+      Handler: codepipeline.handler
+      Environment:
+        Variables:
+          CODE_PIPELINE_NAME: !Ref CodePipelineName
+          PATH_TOKEN: !Ref PathToken
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action: codepipeline:StartPipelineExecution
+            Resource: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipelineName}"
+      Events:
+        ReceiveRequest:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: RestApi
+            Method: POST
+            Path: /codepipeline/{token}
+
+# Template Outputs
+
+Outputs:
+  WebhookEndpoint:
+    Description: "The webhook to trigger build pipeline to set into Storyblok webhooks settings"
+    Value: !Sub "https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/storyblok/codepipeline/${PathToken}"

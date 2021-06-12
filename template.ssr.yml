@@ -1,0 +1,252 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+# Template Information
+
+Description: "Nuxt Storyblok SSR"
+
+# Template Parameters
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: "The domain name of website"
+  AcmCertificateArn:
+    Type: String
+    Description: "The certificate arn for the domain name provided"
+  HostedZoneId:
+    Type: String
+    Description: "The Route53 hosted zone ID used for the domain"
+  StoryblokFrontendFetchEnabled:
+    Type: String
+    Description: "Storyblok frontend fetch enabled"
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+  StoryblokApiToken:
+    Type: String
+    Description: "Storyblok API Token"
+    NoEcho: true
+  StoryblokBridgeEnabled:
+    Type: String
+    Description: "Storyblok Bridge enabled"
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+  StoryblokVersion:
+    Type: String
+    Description: "Storyblok Version"
+    Default: "draft"
+    AllowedValues:
+      - "draft"
+      - "published"
+  CloudFrontCacheTTLPages:
+    Type: Number
+    Description: "The value of CloudFront cache time to live for page render, in seconds"
+    Default: 300
+  CloudFrontCacheTTLStaticFiles:
+    Type: Number
+    Description: "The value of CloudFront cache time to live for static files, in seconds"
+    Default: 31536000  
+  CloudFrontPriceClass:
+    Type: String
+    Description: "The price class for CloudFront distribution"
+    Default: "PriceClass_100"
+    AllowedValues:
+      - PriceClass_100
+      - PriceClass_200
+      - PriceClass_All
+  ErrorDocument:
+    Type: String
+    Description: "The error document"
+    Default: ".nuxt/views/error.html"
+  SsrApiKey:
+    Type: String
+    Description: "The API key to protect SSR access"
+    NoEcho: true
+
+# Global function defaults
+
+Globals:
+  Function:
+    Runtime: nodejs14.x
+    Timeout: 6
+    CodeUri: server/
+
+# Template Resources
+
+Resources:
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: "Z2FDTNDATAQYW2" # CloudFront
+
+  RestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Ref AWS::StackName
+      StageName: ssr
+      Auth:
+        ApiKeyRequired: true
+      BinaryMediaTypes:
+        - 'application/javascript'
+        - 'application/json'
+        - 'application/octet-stream'
+        - 'application/xml'
+        - 'font/eot'
+        - 'font/opentype'
+        - 'font/otf'
+        - 'image/jpeg'
+        - 'image/png'
+        - 'image/svg+xml'
+        - 'text/comma-separated-values'
+        - 'text/css'
+        - 'text/html'
+        - 'text/javascript'
+        - 'text/plain'
+        - 'text/text'
+        - 'text/xml'
+
+  ApiKey: 
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: 
+      - ApiUsagePlan
+    Properties: 
+      Name: !Sub "${AWS::StackName}-apikey"
+      Enabled: true
+      GenerateDistinctId: false
+      Value: !Ref SsrApiKey
+      StageKeys:
+        - RestApiId: !Ref RestApi
+          StageName: ssr
+
+  ApiUsagePlan:
+    Type: "AWS::ApiGateway::UsagePlan"
+    DependsOn: 
+      - RestApissrStage
+    Properties:
+      ApiStages: 
+        - ApiId: !Ref RestApi
+          Stage: ssr
+      UsagePlanName: !Sub "${AWS::StackName}-usage-plan"
+
+  ApiUsagePlanKey:
+    Type: "AWS::ApiGateway::UsagePlanKey"
+    DependsOn: 
+      - RestApi
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiUsagePlan
+
+  NuxtLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Ref AWS::StackName
+      ContentUri: ./
+      CompatibleRuntimes:
+        - nodejs14.x
+      LicenseInfo: 'MIT'
+    Metadata:
+      BuildMethod: makefile
+
+  NuxtSsrFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref AWS::StackName
+      Handler: ssr.handler
+      Environment:
+        Variables:
+          STORYBLOK_FRONTEND_FETCH_ENABLED: !Ref StoryblokFrontendFetchEnabled
+          STORYBLOK_API_TOKEN: !Ref StoryblokApiToken
+          STORYBLOK_BRIDGE_ENABLED: !Ref StoryblokBridgeEnabled
+          STORYBLOK_VERSION: !Ref StoryblokVersion
+      Layers:
+        - !Ref NuxtLayer
+      Events:
+        ReceiveRootRequest:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: RestApi
+            Method: ANY
+            Path: /
+        ReceiveAnyRequest:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: RestApi
+            Method: ANY
+            Path: /{proxy+}
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: 'true'
+        Comment: !Ref AWS::StackName
+        HttpVersion: http2
+        PriceClass: !Ref CloudFrontPriceClass
+        Aliases:
+          - !Ref DomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        Origins:
+          - DomainName: !Sub "${RestApi}.execute-api.${AWS::Region}.amazonaws.com"
+            Id: ssrOrigin
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: "https-only"
+            OriginCustomHeaders:
+              - HeaderName: x-api-key
+                HeaderValue: !Ref SsrApiKey
+            OriginPath: '/ssr'
+        DefaultCacheBehavior:
+          TargetOriginId: ssrOrigin
+          MinTTL: !Ref CloudFrontCacheTTLPages
+          DefaultTTL: !Ref CloudFrontCacheTTLPages
+          MaxTTL: !Ref CloudFrontCacheTTLPages
+          Compress: true
+          ForwardedValues:
+            QueryString: true
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ViewerProtocolPolicy: redirect-to-https
+        CacheBehaviors:
+          - PathPattern: '_nuxt/*'
+            AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            TargetOriginId: ssrOrigin
+            ForwardedValues:
+              QueryString: false
+              Cookies:
+                Forward: none
+            ViewerProtocolPolicy: 'https-only'
+            MinTTL: !Ref CloudFrontCacheTTLStaticFiles
+            DefaultTTL: !Ref CloudFrontCacheTTLStaticFiles
+            MaxTTL: !Ref CloudFrontCacheTTLStaticFiles
+            Compress: true
+
+# Template Outputs
+
+Outputs:
+  CloudFrontDistribution:
+    Description: "The CloudFront distribution in front of the SSR endpoint"
+    Value: !Ref Distribution
+  WebsiteUrl:
+    Description: "The website URL"
+    Value: !Sub "https://${DomainName}/"

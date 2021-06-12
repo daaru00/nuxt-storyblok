@@ -1,0 +1,262 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+# Template Information
+
+Description: "Deploy Pipeline"
+
+# Template Parameters
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: "The domain name of the S3 bucket"
+  DistributionId:
+    Type: String
+    Description: "The identifier of CloudFront distribution"
+  CacheControlMaxAge:
+    Type: Number
+    Description: "The max-age cache header to set fo uploaded objects"
+    Default: 31536000
+  GitHubRepo:
+    Type: String
+    Description: "The name of github repository"
+  GitHubUsername:
+    Type: String
+    Description: "The name of github username"
+  GitHubApiToken:
+    Type: String
+    Description: "The name of github api token"
+    NoEcho: true
+  GitHubBranch:
+    Type: String
+    Description: "The name of github branch"
+    Default: "master"
+  StoryblokFrontendFetchEnabled:
+    Type: String
+    Description: "Storyblok frontend fetch enabled"
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+  StoryblokApiToken:
+    Type: String
+    Description: "Storyblok API Token"
+    NoEcho: true
+  StoryblokBridgeEnabled:
+    Type: String
+    Description: "Storyblok Bridge enabled"
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+  StoryblokVersion:
+    Type: String
+    Description: "Storyblok Version"
+    Default: "draft"
+    AllowedValues:
+      - "draft"
+      - "published"
+
+# Template Resources
+
+Resources:
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+
+  CodeBuildRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeBuildRolePolicy
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+          - Effect: Allow
+            Action: s3:ListAllMyBuckets
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObjectAcl
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:DeleteObject
+              - s3:PutObjectAcl
+            Resource:
+              - !Sub arn:aws:s3:::${ArtifactBucket}
+              - !Sub arn:aws:s3:::${ArtifactBucket}/*
+              - !Sub arn:aws:s3:::${BucketName}
+              - !Sub arn:aws:s3:::${BucketName}/*
+          - Effect: Allow
+            Action:
+              - cloudfront:CreateInvalidation
+            Resource:
+              - !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}
+      Roles:
+        - !Ref CodeBuildRole
+        
+  CodeBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref AWS::StackName
+      ConcurrentBuildLimit: 1
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: STORYBLOK_FRONTEND_FETCH_ENABLED
+            Value: !Ref StoryblokFrontendFetchEnabled
+          - Name: STORYBLOK_API_TOKEN
+            Value: !Ref StoryblokApiToken
+          - Name: STORYBLOK_BRIDGE_ENABLED
+            Value: !Ref StoryblokBridgeEnabled
+          - Name: STORYBLOK_VERSION
+            Value: !Ref StoryblokVersion
+      ServiceRole: !Ref CodeBuildRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:          
+            install:
+              runtime-versions:
+                nodejs: 14
+            pre_build:
+              commands:
+                - npm install
+            build:
+              commands:
+                - npm run generate
+            post_build:
+              commands:
+                - aws s3 sync --delete --no-progress --cache-control max-age='${CacheControlMaxAge}' ./dist s3://${BucketName}/
+                - aws cloudfront create-invalidation --distribution-id ${DistributionId} --paths "/*"
+          cache:
+            paths:
+              - 'node_modules/**/*'
+          artifacts:
+            files:
+              - 'dist/**/*'
+      Cache:
+        Type: S3
+        Location: !Sub "${ArtifactBucket}/cache"
+        Modes:
+          - LOCAL_CUSTOM_CACHE
+          - LOCAL_SOURCE_CACHE
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackName
+      TimeoutInMinutes: 10
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: ""
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+
+  CodePipelineRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodePipelineRolePolicy
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+            Resource: "*"
+            Effect: Allow
+          - Action:
+              - s3:PutObject
+            Resource:
+              - !Sub arn:aws:s3:::${ArtifactBucket}
+              - !Sub arn:aws:s3:::${ArtifactBucket}/*
+            Effect: Allow
+          - Action:
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+            Resource: "*"
+            Effect: Allow
+      Roles:
+        - !Ref CodePipelineRole
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref AWS::StackName
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: "1"
+                Provider: GitHub
+              OutputArtifacts:
+                - Name: StaticSiteSource
+              Configuration:
+                Owner: !Ref GitHubUsername
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubApiToken
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: StaticSiteSource
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              OutputArtifacts:
+                - Name: StaticSite
+              Configuration:
+                ProjectName: !Ref CodeBuild
+              RunOrder: 1
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-artifact"
+      AccessControl: Private
+
+# Template Outputs
+
+Outputs:
+  CodePipelineName:
+    Description: "The name of the CodePipeline"
+    Value: !Ref CodePipeline

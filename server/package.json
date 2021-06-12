@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "name": "ssr",
+  "dependencies": {
+    "nuxt-start": "^2.15.6",
+    "serverless-http": "^2.7.0"
+  }
+}
